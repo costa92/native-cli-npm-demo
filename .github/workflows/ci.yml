@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            key: linux-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            key: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - if: runner.os == 'macOS'
+        # macOS 自带的是 shasum，build-go.sh 用的是 sha256sum
+        run: brew install coreutils
+      - run: scripts/build-go.sh 0.0.0-ci
+      - run: scripts/build-rust.sh 0.0.0-ci ${{ matrix.target }} ${{ matrix.key }}
+      - run: node scripts/pack-npm.mjs --scope @demo --version 0.0.0-ci
+      - run: test/e2e.sh

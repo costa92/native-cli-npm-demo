@@ -1,0 +1,137 @@
+name: release
+
+# 推送 v* tag 时：构建 Go / Rust 全平台产物 → 创建 GitHub Release → 发布 npm 包 → 三大系统上从 npm 实际安装验证。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # 创建 GitHub Release
+  id-token: write # npm provenance
+
+env:
+  NPM_SCOPE: ${{ vars.NPM_SCOPE || '@costa92' }}
+
+jobs:
+  build-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      # Go 交叉编译零成本：一台 Linux 机器编出全部 6 个平台
+      - run: scripts/build-go.sh "${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go
+          path: dist/go
+
+  build-rust:
+    # Rust 每个 target 需要对应的工具链和链接器，按平台分别在对应系统的 runner 上编译
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { key: linux-x64, os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { key: linux-arm64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { key: darwin-x64, os: macos-latest, target: x86_64-apple-darwin }
+          - { key: darwin-arm64, os: macos-latest, target: aarch64-apple-darwin }
+          - { key: win32-x64, os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { key: win32-arm64, os: windows-latest, target: aarch64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: scripts/build-rust.sh "${GITHUB_REF_NAME#v}" ${{ matrix.target }} ${{ matrix.key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-${{ matrix.key }}
+          path: dist/rust
+
+  release:
+    needs: [build-go, build-rust]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: go
+          path: dist/go
+      # 下载型的 npm 包从这里取 Go 二进制，所以必须先于 npm 发布
+      - run: gh release create "$GITHUB_REF_NAME" dist/go/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: go
+          path: dist/go
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rust-*
+          path: dist/rust
+          merge-multiple: true
+      - run: node scripts/pack-npm.mjs --scope "$NPM_SCOPE" --version "${GITHUB_REF_NAME#v}"
+      - name: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          tag=latest
+          case "$version" in *-*) tag=next ;; esac
+          # 平台子包必须先于主包发布，否则主包刚发布时用户会装到缺少子包的版本
+          for dir in dist/npm/rust-*-* dist/npm/rust-shim dist/npm/rust-direct dist/npm/go-download; do
+            name="$(node -p "require('./$dir/package.json').name")"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "skip $name@$version (already published)"
+              continue
+            fi
+            (cd "$dir" && npm publish --access public --provenance --tag "$tag")
+          done
+
+  smoke:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: install from npm
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          mkdir smoke && cd smoke && npm init -y >/dev/null
+          # 刚发布的包在 registry 上可能要等一会儿才可见
+          for i in $(seq 10); do
+            npm install "$NPM_SCOPE/native-demo-go@$v" "$NPM_SCOPE/native-demo-rs@$v" "$NPM_SCOPE/native-demo-rs-direct@$v" && break
+            echo "retry in 30s" && sleep 30
+          done
+      - name: run all three modes
+        working-directory: smoke
+        run: |
+          npx --no-install native-demo-go version
+          npx --no-install native-demo-rs version
+          npx --no-install native-demo-rs-direct version
+          npx --no-install native-demo-rs-direct info

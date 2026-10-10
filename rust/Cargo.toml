@@ -1,0 +1,11 @@
+[package]
+name = "native-demo-rs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Minimal Rust CLI used to demonstrate npm distribution of native binaries"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"
