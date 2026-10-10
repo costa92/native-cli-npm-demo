@@ -14,8 +14,7 @@ REG="http://127.0.0.1:$REG_PORT"
 FAILED=0
 
 cleanup() {
-  # 只杀 npx 不会结束它拉起的 verdaccio，而 verdaccio 会改掉自己的进程名，只能按端口找。
-  lsof -ti "tcp:$REG_PORT" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null
+  [ -n "${REG_PID:-}" ] && kill "$REG_PID" 2>/dev/null
   for port in "$HTTP_PORT" 8766; do
     lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null
   done
@@ -43,8 +42,12 @@ EOF
 for port in "$REG_PORT" "$HTTP_PORT" 8766; do
   if lsof -ti "tcp:$port" -sTCP:LISTEN >/dev/null 2>&1; then echo "端口 $port 已被占用"; exit 1; fi
 done
-npx -y verdaccio@6 --config "$TMP/verdaccio.yaml" --listen "$REG_PORT" >"$TMP/verdaccio.log" 2>&1 &
-for _ in $(seq 60); do curl -s "$REG/-/ping" >/dev/null && break; sleep 1; done
+# 先装再运行：直接拿到 verdaccio 的 PID，也避免 npx 现下载拖慢启动
+npm install --prefix "$TMP/verdaccio" verdaccio@6 --no-audit --no-fund --silent >/dev/null 2>&1
+"$TMP/verdaccio/node_modules/.bin/verdaccio" --config "$TMP/verdaccio.yaml" --listen "$REG_PORT" >"$TMP/verdaccio.log" 2>&1 &
+REG_PID=$!
+for _ in $(seq 120); do curl -s "$REG/-/ping" >/dev/null && break; sleep 1; done
+curl -s "$REG/-/ping" >/dev/null || { echo "verdaccio 没有启动："; cat "$TMP/verdaccio.log"; exit 1; }
 
 TOKEN="$(curl -s -X PUT "$REG/-/user/org.couchdb.user:demo" -H 'content-type: application/json' \
   -d '{"name":"demo","password":"demo-pass"}' | node -pe 'JSON.parse(require("fs").readFileSync(0)).token')"
