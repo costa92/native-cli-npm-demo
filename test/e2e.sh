@@ -44,7 +44,7 @@ for port in "$REG_PORT" "$HTTP_PORT" 8766; do
 done
 # 先装再运行：直接拿到 verdaccio 的 PID，也避免 npx 现下载拖慢启动
 npm install --prefix "$TMP/verdaccio" verdaccio@6 --no-audit --no-fund --silent >/dev/null 2>&1
-"$TMP/verdaccio/node_modules/.bin/verdaccio" --config "$TMP/verdaccio.yaml" --listen "$REG_PORT" >"$TMP/verdaccio.log" 2>&1 &
+"$TMP/verdaccio/node_modules/.bin/verdaccio" --config "$TMP/verdaccio.yaml" --listen "127.0.0.1:$REG_PORT" >"$TMP/verdaccio.log" 2>&1 &
 REG_PID=$!
 for _ in $(seq 120); do curl -s "$REG/-/ping" >/dev/null && break; sleep 1; done
 curl -s "$REG/-/ping" >/dev/null || { echo "verdaccio 没有启动："; cat "$TMP/verdaccio.log"; exit 1; }
