@@ -63,8 +63,10 @@ done
 
 # --- 模拟 GitHub Release ---
 cp -r "$ROOT/dist/go" "$TMP/release"
-python3 -m http.server "$HTTP_PORT" --directory "$TMP/release" >/dev/null 2>&1 &
-sleep 1
+# 显式绑定 IPv4：macOS 上 http.server 默认监听 IPv6，访问 127.0.0.1 会失败
+python3 -m http.server "$HTTP_PORT" --bind 127.0.0.1 --directory "$TMP/release" >/dev/null 2>&1 &
+wait_http() { for _ in $(seq 30); do curl -s "http://127.0.0.1:$1/" >/dev/null && return; sleep 1; done; }
+wait_http "$HTTP_PORT"
 export NATIVE_DEMO_DOWNLOAD_BASE="http://127.0.0.1:$HTTP_PORT"
 
 install_pkg() { # prefix 包名 [npm 参数...]
@@ -111,9 +113,9 @@ echo "== 3. 下载型 + 被篡改的压缩包：校验失败"
 mkdir -p "$TMP/evil" && cp "$TMP/release"/* "$TMP/evil/"
 key="$(node -p 'process.platform==="darwin"?"darwin":"linux"')-$(node -p '({x64:"amd64",arm64:"arm64"})[process.arch]')"
 echo "tampered" >> "$TMP/evil/native-demo-go-$VERSION-$key.tar.gz"
-python3 -m http.server 8766 --directory "$TMP/evil" >/dev/null 2>&1 &
+python3 -m http.server 8766 --bind 127.0.0.1 --directory "$TMP/evil" >/dev/null 2>&1 &
 EVIL_PID=$!
-sleep 1
+wait_http 8766
 P="$TMP/p3"
 NATIVE_DEMO_DOWNLOAD_BASE="http://127.0.0.1:8766" install_pkg "$P" "$SCOPE/native-demo-go"
 expect_eq "npm install 失败" "$?" "1"
