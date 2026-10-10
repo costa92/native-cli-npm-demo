@@ -133,11 +133,12 @@ jobs:
         run: |
           v="${VERSION#v}"
           mkdir smoke && cd smoke && npm init -y >/dev/null
-          # 刚发布的包在 registry 上可能要等一会儿才可见
-          for i in $(seq 10); do
-            npm install "$NPM_SCOPE/native-demo-go@$v" "$NPM_SCOPE/native-demo-rs@$v" "$NPM_SCOPE/native-demo-rs-direct@$v" && break
+          # 新包首次发布后，registry 要过几分钟才能查到（v0.1.0 时等了 5 分钟以上）
+          for i in $(seq 20); do
+            npm install "$NPM_SCOPE/native-demo-go@$v" "$NPM_SCOPE/native-demo-rs@$v" "$NPM_SCOPE/native-demo-rs-direct@$v" && exit 0
             echo "retry in 30s" && sleep 30
           done
+          exit 1
       - name: run all three modes
         working-directory: smoke
         run: |
